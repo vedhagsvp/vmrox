@@ -1,86 +1,55 @@
-require('dotenv').config()
-const net = require('net')
+require('dotenv').config();
+const http = require('http');
+const https = require('https');
+const { URL } = require('url');
 
-process.on('uncaughtException', (err) => {
-  console.error(err)
-})
+// Config
+const REMOTE_HOSTS = process.env.REMOTE_HOSTS.split(',').map(h => h.trim());
+const REMOTE_PORT = process.env.REMOTE_PORT || 443;
+const LOCAL_HOST = process.env.LOCAL_HOST || '0.0.0.0';
+const LOCAL_PORT = parseInt(process.env.LOCAL_PORT, 10) || 57542;
+const REMOTE_PASSWORD = process.env.REMOTE_PASSWORD || null;
 
-const remotehost = process.env.REMOTE_HOST
-const remoteport = process.env.REMOTE_PORT
-const password = process.env.REMOTE_PASSWORD
-const localhost = process.env.LOCAL_HOST || '0.0.0.0'
-const localport = process.env.LOCAL_PORT || 80
+// Helper to forward request to the first available remote host
+function forwardRequest(req, res) {
+  const tryHost = (index) => {
+    if (index >= REMOTE_HOSTS.length) {
+      res.writeHead(502);
+      return res.end('All remote hosts failed');
+    }
 
-if (!localhost || !localport || !remotehost || 
-    !remoteport || !password) {
-  console.error('Error: check your arguments and try again!')
-  process.exit(1)
+    const hostname = REMOTE_HOSTS[index];
+    const options = {
+      hostname,
+      port: REMOTE_PORT,
+      path: req.url,
+      method: req.method,
+      headers: {
+        ...req.headers,
+        ...(REMOTE_PASSWORD ? { 'x-password': REMOTE_PASSWORD } : {}),
+        host: hostname
+      }
+    };
+
+    const proxy = https.request(options, (remoteRes) => {
+      res.writeHead(remoteRes.statusCode, remoteRes.headers);
+      remoteRes.pipe(res, { end: true });
+    });
+
+    proxy.on('error', (err) => {
+      console.error(`Error with ${hostname}: ${err.message}`);
+      tryHost(index + 1); // try next host
+    });
+
+    req.pipe(proxy, { end: true });
+  };
+
+  tryHost(0);
 }
 
-const server = net.createServer((localsocket) => {
-  const remotesocket = new net.Socket()
+// Start local HTTP server
+const server = http.createServer(forwardRequest);
 
-  remotesocket.connect(remoteport, remotehost)
-
-  localsocket.on('connect', (data) => {
-    console.log('>>> connection #%d from %s:%d', 
-      server.connections,
-      localsocket.remoteAddress,
-      localsocket.remotePort)
-  })
-
-  localsocket.on('data', (data) => {
-    console.log('%s:%d - writing data to remote',
-      localsocket.remoteAddress,
-      localsocket.remotePort
-    )
-    console.log('localsocket-data: %s', data)
-
-    const flushed = remotesocket.write(data)
-    if (!flushed) {
-      console.log(' remote not flused; pausing local')
-      localsocket.pause()
-    }
-  })
-
-  remotesocket.on('data', (data) => {
-    console.log('%s:%d - writing data to local', 
-      localsocket.remoteAddress,
-      localsocket.remotePort
-    )
-    console.log('remotesocket-data: %s', data)
-    const flushed = localsocket.write(data)
-    if (!flushed) {
-      console.log(' local not flushed; pausing remote')
-      remotesocket.pause()
-    }
-  })
-
-  localsocket.on('drain', () => {
-    console.log('%s:%d - resuming remote',
-      localsocket.remoteAddress,
-      localsocket.remotePort
-    )
-    remotesocket.resume()
-  })
-
-  localsocket.on('close', (had_err) => {
-    console.log('%s:%d - closing remote',
-      localsocket.remoteAddress,
-      localsocket.remotePort
-    )
-    remotesocket.end()
-  })
-
-  remotesocket.on('close', (had_err) => {
-    console.log('%s:%d - closing local', 
-      localsocket.remoteAddress,
-      localsocket.remotePort
-    )
-    localsocket.end()
-  })
-})
-
-server.listen(localport, localhost)
-
-console.log('redirecting connections from %s:%d to %s:%d', localhost, localport, remotehost, remoteport)
+server.listen(LOCAL_PORT, LOCAL_HOST, () => {
+  console.log(`Proxy running at http://${LOCAL_HOST}:${LOCAL_PORT}/`);
+});
