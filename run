@@ -1,7 +1,7 @@
 apt update
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 apt -y install nodejs
-ufw allow 57542
+ufw allow 33333
 ufw allow 8008
 ufw allow 8080
 ufw allow 7155
